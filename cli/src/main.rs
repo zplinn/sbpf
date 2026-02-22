@@ -14,6 +14,9 @@ use test_utils::TestContextObject;
 const MIN_HEAP_FRAME_BYTES: u32 = 32_768;
 const MAX_HEAP_FRAME_BYTES: u32 = 256 * 1024;
 const MAX_COMPUTE_UNIT_LIMIT: u32 = 1_400_000;
+const MAX_PERMITTED_DATA_LENGTH: usize = 10 * 1024 * 1024;
+const PROGRAMDATA_METADATA_SIZE: usize = 45;
+const MAX_ELF_SIZE: usize = MAX_PERMITTED_DATA_LENGTH - PROGRAMDATA_METADATA_SIZE;
 
 fn main() {
     let matches = App::new("Solana BPF CLI")
@@ -117,12 +120,27 @@ fn main() {
     let mut file = File::open(Path::new(matches.value_of("elf").unwrap())).unwrap();
     let mut elf = Vec::new();
     file.read_to_end(&mut elf).unwrap();
+    if elf.len() > MAX_ELF_SIZE {
+        eprintln!(
+            "Error: ELF size {} exceeds maximum program size of {} bytes",
+            elf.len(),
+            MAX_ELF_SIZE,
+        );
+        process::exit(1);
+    }
     #[allow(unused_mut)]
-    let mut executable = Executable::<TestContextObject>::from_elf(&elf, loader)
-        .map_err(|err| format!("Executable constructor failed: {err:?}"))
-        .unwrap();
+    let mut executable = match Executable::<TestContextObject>::from_elf(&elf, loader) {
+        Ok(executable) => executable,
+        Err(err) => {
+            eprintln!("Error: Failed to load ELF: {err:?}");
+            process::exit(1);
+        }
+    };
 
-    executable.verify::<RequisiteVerifier>().unwrap();
+    if let Err(err) = executable.verify::<RequisiteVerifier>() {
+        eprintln!("Error: ELF verification failed: {err:?}");
+        process::exit(1);
+    }
 
     #[cfg(all(not(target_os = "windows"), target_arch = "x86_64"))]
     executable.jit_compile().unwrap();
